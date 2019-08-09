@@ -20,17 +20,10 @@ NUM_LSTM = SETTING['N_LSTM']
 def build_model():
         l_input = Input(batch_shape=(None,*NUM_STATE))
 
-        l_noise1 = Input(batch_shape=(None, NUM_LSTM, NUM_ACTIONS),name='noise1')
-        l_noise2 = Input(batch_shape=(None, NUM_ACTIONS),name='noise2')
-        l_noise3 = Input(batch_shape=(None, NUM_LSTM, 1),name='noise3')
-        l_noise4 = Input(batch_shape=(None, 1),name='noise4')
-
-        net = Pixel_Shift()(l_input)
-
-        net = Conv2D(16,(8,8),strides=(4, 4))(net)
+        net = Conv2D(16,(8,8),padding='same',strides=4)(l_input)
         net = Activation('relu')(net)
 
-        net = Conv2D(32,(4,4),strides=(2, 2))(net)
+        net = Conv2D(32,(4,4),padding='same',strides=2)(net)
         net = Activation('relu')(net)
 
         net = Flatten()(net)
@@ -38,11 +31,11 @@ def build_model():
         net = Dense(256)(net)
         net = Activation('relu')(net)
 
-        out_actions = NoisyDense(NUM_ACTIONS,name='policy_head')([net,l_noise1,l_noise2])
+        out_actions = Dense(NUM_ACTIONS,name='policy_head')(net)
         out_actions = Activation('softmax')(out_actions)
 
-        out_value = PopArt(1,name="popart_value_head")([net,l_noise3,l_noise4])
+        out_value = PopArt(1,name="popart_value_head")(net)
 
-        model = Model(inputs=[l_input,l_noise1,l_noise2,l_noise3,l_noise4], outputs=[out_actions, out_value])
+        model = Model(inputs=[l_input], outputs=[out_actions, out_value])
         
         return model

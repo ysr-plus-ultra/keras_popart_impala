@@ -16,7 +16,7 @@ class PopArt(Layer):
                  activity_regularizer=None,
                  kernel_constraint=None,
                  bias_constraint=None,
-                 sigma_init = 0.05,
+                 sigma_init = 0.017,
                  **kwargs):
         if 'input_shape' not in kwargs and 'input_dim' in kwargs:
             kwargs['input_shape'] = (kwargs.pop('input_dim'),)
@@ -35,7 +35,6 @@ class PopArt(Layer):
 
 
     def build(self, input_shape):
-        input_shape = input_shape[0]
         input_dim = input_shape[-1]
 
         self.kernel = self.add_weight(shape=(input_dim, self.units),
@@ -44,19 +43,12 @@ class PopArt(Layer):
                                       regularizer=self.kernel_regularizer,
                                       constraint=self.kernel_constraint)
 
-        self.sigmaW = self.add_weight(shape=(input_dim, self.units),
-                                      initializer=initializers.Constant(value=self.sigma_init),
-                                      name='sigmaW')
-
         if self.use_bias:
             self.bias = self.add_weight(shape=(self.units,),
                                         initializer=self.bias_initializer,
                                         name='bias',
                                         regularizer=self.bias_regularizer,
                                         constraint=self.bias_constraint)
-            self.sigmab = self.add_weight(shape=(self.units,),
-                                        initializer=initializers.Constant(value=self.sigma_init),
-                                        name='sigmab')
         else:
             self.bias = None
 
@@ -69,19 +61,16 @@ class PopArt(Layer):
         self.built = True
 
     def call(self, inputs):
-        batch = inputs[0]
-        noise_p = inputs[1]*self.inv_sigma
-        noise_q = inputs[2]*self.inv_sigma
-        output = K.dot(batch, self.kernel) + tf.einsum('ij,ijk->ik',batch,(self.sigmaW*noise_p))
+
+        output = K.dot(inputs, self.kernel)
         if self.use_bias:
-            output = K.bias_add(output, self.bias) + (self.sigmab*noise_q)
+            output = K.bias_add(output, self.bias)
 
         return output
 
     def compute_output_shape(self, input_shape):
         #assert input_shape and len(input_shape) >= 2
         #assert input_shape[-1]
-        input_shape = input_shape[0]
         output_shape = list(input_shape)
         output_shape[-1] = self.units
         return tuple(output_shape)
