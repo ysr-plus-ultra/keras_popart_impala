@@ -30,14 +30,13 @@ LEARNING_RATE = SETTING['LEARNING_RATE']
 POPART_BETA =SETTING['POPART_BETA']
 
 if __name__ == '__main__':
-        train_manager = multiprocessing.Manager()
         seeds = random.sample(range(1, 1000), ACTORS)
         print("random seed: ",seeds)
-        shared_training_buffer = train_manager.Queue(128)
-        shared_step = train_manager.Value('d', 0.0)
-        policy_state_push = train_manager.Queue(ACTORS)
-        report_episode = train_manager.list([np.nan]*ACTORS)
-        report_reward = train_manager.list([np.nan]*ACTORS)
+        shared_training_buffer = multiprocessing.Queue(1024)
+        shared_step = multiprocessing.Value('d', 0.0)
+        policy_state_push = multiprocessing.Queue(ACTORS*2)
+        report_episode = multiprocessing.Value('d', 0.0)
+        report_reward = multiprocessing.Value('d', 0.0)
         learner_pipe=[]
         actor_pipe=[]
 
@@ -78,7 +77,6 @@ if __name__ == '__main__':
         class Brain:
                 replay_buffer = collections.deque(maxlen=N_REPLAY)
                 train_queue = None
-                locking = threading.Lock()
                 def __init__(self):
                         import keras.backend.tensorflow_backend as K
                         config = tf.ConfigProto()
@@ -111,20 +109,22 @@ if __name__ == '__main__':
                         
                         self.process_reward = tf.Variable(0.0)
                         self.process_ep = tf.Variable(0.0)
-
-                        tf.summary.scalar("thread_episode_by_time", self.process_ep,family='0. threads')
-                        tf.summary.scalar("thread_reward_by_time", self.process_reward,family='0. threads')
+                        self.buffer_size = tf.Variable(0.0)
+                        tf.summary.scalar("mean_episode", self.process_ep,family='0. threads')
+                        tf.summary.scalar("mean_reward", self.process_reward,family='0. threads')
+                        tf.summary.scalar("buffer_size", self.buffer_size,family='0. threads')
                         self.merged = tf.summary.merge_all()
                         self.train_writer = tf.summary.FileWriter("./logs/"+ENV)
 
                 def popart_ops(self):
                         popart_mu = self.pop_art_layer.mu
                         popart_nu = self.pop_art_layer.nu
+                        popart_sigma = self.pop_art_layer.sigma
                         popart_kernel = self.pop_art_layer.kernel
                         popart_bias = self.pop_art_layer.bias
 
-                        new_kernel = popart_kernel*self.old_sigma/self.updated_sigma
-                        new_bias = (self.old_sigma*popart_bias+self.old_mu-self.updated_mu)/self.updated_sigma
+                        new_kernel = popart_kernel*popart_sigma/self.updated_sigma
+                        new_bias = (popart_sigma*popart_bias+popart_mu-self.updated_mu)/self.updated_sigma
 
                         assign_mu = tf.assign(popart_mu,self.updated_mu)
                         assign_nu = tf.assign(popart_nu,self.updated_nu)
@@ -156,50 +156,37 @@ if __name__ == '__main__':
                                 elif "pixel" in elem.name:
                                         self.preprocessing = elem
                                         
-                        self.old_mu = tf.Variable(0.0,trainable=False)
-                        self.old_nu = tf.Variable(1.0,trainable=False)
-                        self.old_sigma = tf.Variable(1.0,trainable=False)
-
-                        old_mu          = tf.assign(self.old_mu,self.pop_art_layer.mu)
-                        old_nu          = tf.assign(self.old_nu,self.pop_art_layer.nu)
-                        old_sigma       = tf.clip_by_value(tf.sqrt(old_nu-tf.square(old_mu)),1e-4,1e+6)
-                        old_sigma       = tf.assign(self.old_sigma,old_sigma)
-
                         self.updated_mu = tf.Variable(0.0,trainable=False)
                         self.updated_nu = tf.Variable(1.0,trainable=False) 
                         self.updated_sigma = tf.Variable(1.0,trainable=False)               
 
                         sequence_items = (s_t)
-                        initial_values = (tf.zeros_like(a_t[0]),tf.zeros_like(r_t[0]))
+                        initial_values = (tf.zeros_like(a_t[0]),tf.zeros_like(r_t[0]),tf.zeros_like(r_t[0]))
                         def calc_hc(last_output, current_sequence):
                                 current_s= current_sequence
-                                p, v = model([current_s])
-                                return p,v
+                                p, v, u_v = model([current_s])
+                                return p,v,u_v
 
-                        p,normalized_v = tf.scan(fn=calc_hc,
+                        p,normalized_v,unnormalized_v = tf.scan(fn=calc_hc,
                                                         elems=sequence_items,
                                                         initializer=initial_values,
                                                         parallel_iterations=1,
                                                         back_prop=True,
                                                         name='scan1')
 
-                        _,bootstrap_value = model([_s_t])
+                        _,_,bootstrap_value = model([_s_t])
 
-                        unnormalized_v = normalized_v*old_sigma+old_mu
-                        bootstrap_value = bootstrap_value*old_sigma+old_mu
-                        
                         v_plus1 = tf.concat([unnormalized_v[1:], tf.expand_dims(bootstrap_value, 0)], axis=0)
                         pi = tf.reduce_sum(p*a_t,axis=-1,keepdims=True)
-                        rho_s = tf.where(tf.equal(mu_t,0.),tf.zeros_like(mu_t),pi/mu_t)
+                        rho_s = tf.truediv(pi,mu_t)
                         rho_thres = 1.0
-                        rho_s = tf.minimum(rho_s,rho_thres) 
-                        c_s = tf.minimum(rho_s,1.0)                                                                
-                        deltas = c_s*(r_t+discount_t*v_plus1-unnormalized_v)
-                        sequences = (c_s,deltas,discount_t)
+                        rho_s = tf.minimum(rho_s,rho_thres)                                                               
+                        deltas = rho_s*(r_t+discount_t*v_plus1-unnormalized_v)
+                        sequences = (rho_s,deltas,discount_t)
 
                         def scanfunc(acc, sequence_item):
-                                c_seq, delta_seq, discount_seq = sequence_item
-                                return delta_seq + discount_seq * c_seq * acc                                 
+                                rho_seq, delta_seq, discount_seq = sequence_item
+                                return delta_seq + discount_seq * rho_seq * acc                                 
 
                         initial_values = tf.zeros_like(bootstrap_value)
                         vs_minus_v_xs = tf.scan(
@@ -215,28 +202,25 @@ if __name__ == '__main__':
                         v_s_plus1 = tf.concat([v_s[1:], tf.expand_dims(bootstrap_value, 0)], axis=0)
 
                         G_v = v_s
-                        G_pi = r_t+discount_t*v_s_plus1
-                        self.update_statistics(G_v, old_mu, old_nu)
+                        self.update_statistics(G_v, self.pop_art_layer.mu, self.pop_art_layer.nu)
 
-                        normalized_G_v = tf.stop_gradient((G_v-old_mu)/old_sigma)
-                        normalized_G_pi = tf.stop_gradient((G_pi-old_mu)/old_sigma)
+                        normalized_G_v = tf.stop_gradient((G_v-self.pop_art_layer.mu)*self.pop_art_layer.rsigma)
 
-                        value_advantage = normalized_G_v-normalized_v
-                        policy_advantage = rho_s*(normalized_G_pi-normalized_v)
+                        advantage = normalized_G_v-normalized_v
 
                         safe_p = tf.where(tf.equal(p, 0.), tf.ones_like(p), p)
-                        log_prob =  a_t*tf.log(safe_p)
+                        log_prob =  tf.reduce_sum(a_t*tf.log(safe_p),axis=-1,keepdims=True)
                         
-                        self.loss_policy = -log_prob * tf.stop_gradient(policy_advantage)                             # maximize policy
-                        self.loss_value  = tf.square(value_advantage)                                                  # minimize value error
+                        self.loss_policy = -log_prob * tf.stop_gradient(advantage)                              # maximize policy
+                        self.loss_value  = tf.square(advantage)                                                  # minimize value error
                         self.g_step = tf.train.get_or_create_global_step()
                         self.entropy = tf.reduce_sum(p * tf.log(safe_p), axis=-1, keepdims=True)    # maximize entropy (regularization)
 
                         tf.summary.scalar('max_prob',tf.reduce_mean(tf.reduce_max(p,axis=-1,keepdims=True)),family='5. etc')
                         tf.summary.scalar('mean_value',tf.reduce_mean(unnormalized_v),family='5. etc')
-                        tf.summary.scalar('old_mu',self.old_mu,family='6. stat')
-                        tf.summary.scalar('old_nu',self.old_nu,family='6. stat')
-                        tf.summary.scalar('old_sigma',self.old_sigma,family='6. stat')
+                        tf.summary.scalar('old_mu',self.pop_art_layer.mu,family='6. stat')
+                        tf.summary.scalar('old_nu',self.pop_art_layer.nu,family='6. stat')
+                        tf.summary.scalar('old_sigma',self.pop_art_layer.sigma,family='6. stat')
 
                         self.loss_total = tf.reduce_sum(self.loss_policy + 0.5 *self.loss_value + (ENTROPY/tf.cast(self.g_step+1,tf.float32) * self.entropy))
                         
@@ -245,11 +229,14 @@ if __name__ == '__main__':
                         #m = tf.reduce_mean(s_t[...,0],axis=(0,1))
                         #mean_update = tf.assign(self.preprocessing.mean,self.preprocessing.mean*(0.997)+(0.003)*m)
                         #self.update_ops = [mean_update]                                 
-                        optimizer = tf.train.RMSPropOptimizer(LR,decay=0.99,epsilon=0.1)
+                        optimizer = tf.train.RMSPropOptimizer(LR)
+                        #optimizer =tf.train.MomentumOptimizer(LR,0.99,use_nesterov=True)
+                        #optimizer = tf.train.AdamOptimizer(LR)
                         #gradients, variables = zip(*optimizer.compute_gradients(self.loss_total))
                         #gradients, _ = tf.clip_by_global_norm(gradients, 40.0)
+                        
+                        
                         #minimize = optimizer.apply_gradients(zip(gradients, variables),global_step=self.g_step)
-                        #with tf.control_dependencies(self.update_ops):
                         minimize = optimizer.minimize(self.loss_total,global_step=self.g_step)
                 
                         return placeholder_set, minimize
@@ -271,17 +258,16 @@ if __name__ == '__main__':
 
                 def get_unroll(self):
                         batch_list = []
-
+                        replay=[]
                         for i in range(BATCH_SIZE):
                                 elem = self.train_queue.get()
                                 batch_list.append(elem)
-
+                        if len(self.replay_buffer)>N_SAMPLE:
+                                replay = random.sample(self.replay_buffer,N_SAMPLE) 
                         if USE_REPLAY:
                                 self.replay_buffer.extend(batch_list)
-                                if len(self.replay_buffer)>N_SAMPLE:
-                                        replay = random.sample(self.replay_buffer,N_SAMPLE)                       
-                                        batch_list = batch_list+replay
-                        return batch_list
+
+                        return batch_list+replay
                                 
                 def feed(self):
                         trainq = self.get_unroll()
@@ -307,6 +293,8 @@ if __name__ == '__main__':
 
                 def optimize(self):
                         s,a,r,mu,s_,s_mask = self.qq.get()
+                        s=s/255.0
+                        s_=s_/255.0
                         placeholder_set, minimize = self.graph
                         s_t, a_t, r_t, mu_t, _s_t, _s_mask_t= placeholder_set
 
@@ -318,35 +306,38 @@ if __name__ == '__main__':
                                                 mu_t : mu,
                                                 _s_t: s_,
                                                 _s_mask_t: s_mask,
-                                                self.process_reward:np.nanmean(report_reward),
-                                                self.process_ep:np.nanmean(report_episode),
+                                                self.process_reward:report_reward.value,
+                                                self.process_ep:report_episode.value,
+                                                self.buffer_size:self.train_queue.qsize(),
                                                 self.lp: 1.0})
                         if POPART:
                                 self.session.run(self.popart)
                         
-                        #if TRY%10==1:
-                        self.train_writer.add_summary(summary,global_step=TRY*(BATCH_SIZE+N_SAMPLE)*N_STEP_UNROLL)
-                        self.train_writer.flush()
+                        if TRY%10==1:
+                                self.train_writer.add_summary(summary,global_step=TRY)
+                                self.train_writer.flush()
                         if TRY%100==1:
                                 print(TRY)
                                 self.model.save("./logs/"+ENV+"/"+ENV+".h5")
                         gc.collect()
 
                 def predict(self, stop):
-                        s,num=[[],[]]
-                        for i in range(ACTORS):
+                        s=np.empty((ACTORS,*NUM_STATE))
+                        num=[]
+                        for i in range(ACTORS//2):
                                 _s,_num = policy_state_push.get()
-                                s.append(_s)
+                                s[i]=_s
                                 num.append(_num)
 
-                        s = np.array(s)
+                        s = s/255.0
 
                         with self.default_graph.as_default():
-                                r_p, _ = self.predict_model.predict([s])
+                                r_p, _, _ = self.predict_model.predict([s])
 
-                        for i in range(ACTORS):
+                        for i in range(len(num)):
                                 idx = num[i]
                                 learner_pipe[idx].send((r_p[i], stop))
+                        gc.collect()
 
                 def sync_weight(self):
                         with self.default_graph.as_default():
@@ -391,7 +382,7 @@ if __name__ == '__main__':
                 def run(self):
                         while not self.stop_signal:
                                 brain.sync_weight()
-                                for i in range(N_STEP_UNROLL):
+                                for i in range(N_STEP_UNROLL*2):
                                         brain.predict(self.stop_signal)
                                 if self.stop_signal:
                                         break
@@ -416,7 +407,7 @@ if __name__ == '__main__':
         while 1:
                 time.sleep(1)
                 elapsed_time = time.time()-start_time
-                if elapsed_time>3600*6:
+                if elapsed_time>3600*1:
                         for f in feeders:
                                 f.stop()
 

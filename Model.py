@@ -20,22 +20,22 @@ NUM_LSTM = SETTING['N_LSTM']
 def build_model():
         l_input = Input(batch_shape=(None,*NUM_STATE))
 
-        net = Conv2D(16,(8,8),padding='same',strides=4)(l_input)
+        net = Conv2D(16,(8,8),strides=4,padding='same',kernel_initializer='he_normal')(l_input)
         net = Activation('relu')(net)
 
-        net = Conv2D(32,(4,4),padding='same',strides=2)(net)
+        net = Conv2D(32,(4,4),strides=2,padding='same',kernel_initializer='he_normal')(net)
         net = Activation('relu')(net)
 
         net = Flatten()(net)
 
-        net = Dense(256)(net)
+        net = Dense(256,kernel_initializer='he_normal')(net)
         net = Activation('relu')(net)
 
         out_actions = Dense(NUM_ACTIONS,name='policy_head')(net)
         out_actions = Activation('softmax')(out_actions)
 
-        out_value = PopArt(1,name="popart_value_head")(net)
+        out_value, unnomalized_value = PopArt(1,name="popart_value_head")(net)
 
-        model = Model(inputs=[l_input], outputs=[out_actions, out_value])
+        model = Model(inputs=[l_input], outputs=[out_actions, out_value, unnomalized_value])
         
         return model

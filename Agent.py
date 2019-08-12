@@ -33,7 +33,6 @@ class Agent(multiprocessing.Process):
 
         def runEpisode(self):
                 s = self.env.reset()
-
                 while 1:
                         p = self.predict(s)
                         a = np.random.choice(NUM_ACTIONS, p=p)
@@ -55,20 +54,13 @@ class Agent(multiprocessing.Process):
                         self.current_episode+=1
                         self.mean_reward.append(self.R)
                         self.mean_episode.append(self.step)
-                        self.ep_list[self.num] = self.step
-                        self.reward_list[self.num] = self.R
+                        if self.ep_list.value == 0:
+                                self.ep_list.value = self.step
+                                self.reward_list.value = self.R
+                        else:
+                                self.ep_list.value = self.ep_list.value*0.99 + 0.01*self.step
+                                self.reward_list.value = self.reward_list.value*0.99 + 0.01*self.R
                         print("R: %3d"%(int(self.R)),"step: ",self.frame.value,"episode_step: ",self.step)
-                        '''
-                        summary = self.session.run(self.write_op,
-                                                {
-                                                        self.report_reward: self.R,
-                                                        self.report_episode: self.step,
-                                                        self.report_reward_mean: np.mean(self.mean_reward),
-                                                        self.report_episode_mean: np.mean(self.mean_episode),
-                                                })
-                        self.writer.add_summary(summary,self.current_episode)
-                        self.writer.flush()
-                        '''
                         self.R = 0
                         self.step=0
 
@@ -83,24 +75,9 @@ class Agent(multiprocessing.Process):
 
         def sub_init(self):
                 env = make_atari(ENV)
-                self.env = wrap_deepmind(env,episode_life=True, clip_rewards=False, frame_stack=True, scale=True)
+                self.env = wrap_deepmind(env,episode_life=True, clip_rewards=False, frame_stack=True, scale=False)
                 self.env.seed(self.seed)
                 self.count=0.0
-                '''
-                self.writer = tf.summary.FileWriter("./logs/"+ENV+"/"+self.name)
-                self.report_reward = tf.Variable(0.0)
-                self.report_episode = tf.Variable(0.0)
-                self.report_reward_mean = tf.Variable(0.0)
-                self.report_episode_mean = tf.Variable(0.0)
-                tf.summary.scalar("episode", self.report_episode,family='1. monitor')
-                tf.summary.scalar("reward", self.report_reward,family='1. monitor')
-                tf.summary.scalar("mean_episode", self.report_episode_mean,family='1. monitor')
-                tf.summary.scalar("mean_reward", self.report_reward_mean,family='1. monitor')
-                self.write_op = tf.summary.merge_all()
-                self.session = tf.Session()
-                self.session.run(tf.global_variables_initializer())
-                '''
-                self.soft_reset=False
               
 
         def stop(self):
@@ -116,15 +93,14 @@ class Agent(multiprocessing.Process):
                 self.memory.append((s, a_cat, r, p,s_,flag_done))
                 if len(self.memory)>=N_STEP:
                         _s,_a, _r, _p,_s_,_s_mask = zip(*self.memory)
-                        s = np.array(_s).astype(np.float32)
-                        a = np.array(_a).astype(np.float32)
-                        r = np.array(_r).astype(np.float32).reshape((-1,1))
-                        p = np.array(_p).astype(np.float32)
-                        mu = np.sum(p*a,axis=-1,keepdims=True).astype(np.float32).reshape((-1,1))
-                        s_ = np.array(_s_).astype(np.float32)
-                        s_mask = np.array(_s_mask).astype(np.float32).reshape((-1,1))
-
+                        s = np.array(_s)
+                        a = np.array(_a)
+                        r = np.array(_r).reshape((-1,1))
+                        p = np.array(_p)
+                        mu = np.sum(p*a,axis=-1,keepdims=True).reshape((-1,1))
+                        s_ = np.array(_s_)
+                        s_mask = np.array(_s_mask).reshape((-1,1))
                         ready = (s, a, r, mu,s_[-1],s_mask)
-                        self.share_train.put(ready)
+                        self.share_train.put_nowait(ready)
                         self.memory.clear()
                         gc.collect()
