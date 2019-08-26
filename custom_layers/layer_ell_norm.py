@@ -6,7 +6,8 @@ import tensorflow as tf
 class Layer_Ell(Layer):
 
     def __init__(self,
-                epsilon=1e-8,
+                axis=-1,
+                epsilon=1e-12,
                 method='l2',
                 center = True,
                 scale = True,
@@ -18,7 +19,7 @@ class Layer_Ell(Layer):
                 gamma_constraint=None,
                 **kwargs):
         super(Layer_Ell, self).__init__(**kwargs)
-        self.axis = 0
+        self.axis = axis
         self.epsilon = epsilon
         self.method = method
         self.center = center
@@ -33,38 +34,43 @@ class Layer_Ell(Layer):
 
     def build(self, input_shape):
         # Prepare broadcasting shape.
-        ndim = len(input_shape)
-        reduction_axes = list(range(len(input_shape)))
-        self.reduction_axes = reduction_axes[1:]
+        dim = input_shape[self.axis]
+        shape = (dim,)
+
         #if ndim>2:
         #    self.reduction_axes = self.reduction_axes[:-1]
         if self.scale:
-            self.gamma = self.add_weight(name='gamma', shape=input_shape[-1:],
+            self.gamma = self.add_weight(name='gamma', shape=shape,
                                      initializer=self.gamma_initializer, trainable=True)
         else:
             self.gamma = 1.0
         if self.center:
-            self.beta = self.add_weight(name='beta', shape=input_shape[-1:],
+            self.beta = self.add_weight(name='beta', shape=shape,
                                      initializer=self.beta_initializer, trainable=True)
         else:
             self.beta = 0.0
         self.built = True
 
     def call(self, inputs, training=None):
-        multiply = 1.0
+        input_shape = K.int_shape(inputs)
+        # Prepare broadcasting shape.
+        ndim = len(input_shape)
+        self.reduction_axes = list(range(len(input_shape)))
+        del self.reduction_axes[0]
         mean = K.mean(inputs, axis=self.reduction_axes, keepdims=True)
+
         if self.method is 'l1':
             norm = tf.reduce_mean(K.abs(inputs-mean), axis=self.reduction_axes, keepdims=True)
-            normalized = (inputs-mean)/(norm+self.epsilon)
 
         elif self.method is 'l2':
-            inv_std = tf.rsqrt(tf.reduce_mean(tf.square(inputs-mean), axis=self.reduction_axes, keepdims=True))
-            normalized = (inputs-mean)*inv_std
+            norm = tf.sqrt(tf.reduce_mean(tf.square(inputs-mean), axis=self.reduction_axes, keepdims=True))
 
         elif self.method is 'inf':
             norm = K.max(K.abs(inputs-mean), axis=self.reduction_axes, keepdims=True)
-            normalized = (inputs-mean)/(norm+self.epsilon)
-        ans = multiply*self.gamma*normalized + self.beta
+        
+        normalized = (inputs-mean)/(norm+self.epsilon)
+
+        ans = self.gamma*normalized + self.beta
         return ans
 
     def compute_output_shape(self, input_shape):

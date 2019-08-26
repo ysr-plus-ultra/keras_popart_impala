@@ -1,84 +1,84 @@
-import multiprocessing
-from baselines.common.atari_wrappers import wrap_deepmind,make_atari
-import numpy as np
-import gym
-import collections
 import json
-import gc
+import multiprocessing
+from baselines.common.atari_wrappers import *
+import numpy as np
+import random
+
 with open('setting.json') as json_file:  
         SETTING = json.load(json_file)
-ENV = SETTING['ENV']
+
 NUM_STATE = SETTING['N_STATE']
 NUM_ACTIONS = SETTING['N_ACTIONS']
 NUM_LSTM = SETTING['N_LSTM']
 N_STEP = SETTING['N_STEP_UNROLL']
+NUM_TASK = SETTING['N_TASK']
 
 class Agent(multiprocessing.Process):
         stop_signal = False
-        def __init__(self, num=None,render=False, train_buffer = None, model = None, frame=None, seed = 0, pipe = None, push_state = None, list_ep = None, list_reward = None):
+        def __init__(self, num=None, task=None, render=False, train_buffer = None, model = None, frame=None, seed = 0, pipe = None, push_state = None, list_ep = None, list_reward = None):
+
                 multiprocessing.Process.__init__(self)
                 self.num = num
+                self.task = task
+                self.taskidx = self.num%NUM_TASK
                 self.name = 'process_{}'.format(self.num)
-                self.memory = collections.deque(maxlen=N_STEP)
+                self.memory = []
                 self.share_train = train_buffer
                 self.frame = frame
-                self.step = 0.0          
+                self.step = 0.0
                 self.seed = seed
-                self.mean_episode = collections.deque(maxlen=10)
-                self.mean_reward = collections.deque(maxlen=10)
                 self.pipe = pipe
                 self.push_state = push_state
                 self.ep_list = list_ep
                 self.reward_list = list_reward
 
         def runEpisode(self):
-                s = self.env.reset()
+                s=self.env.reset()
                 while 1:
                         p = self.predict(s)
                         a = np.random.choice(NUM_ACTIONS, p=p)
-                        s_, r, done, info = self.env.step(a)
+                        s_, r, done, _ = self.env.step(a)
                         self.R+=r
                         a_cats = np.eye(NUM_ACTIONS)[a]
                         if done:
-                                self.train(s,a_cats, r, p, s_,0.0)
+                                self.train(s, a_cats, r, p, s_,0.0)
                         else:   
-                                self.train(s,a_cats, r, p, s_,1.0)
+                                self.train(s, a_cats, r, p, s_,1.0)
                         self.step+=1.0
                         s = s_
 
                         if done or self.stop_signal:
                                 break
-                current_life = self.env.unwrapped.ale.lives()
-                if current_life == 0:
-                        self.frame.value += self.step
-                        self.current_episode+=1
-                        self.mean_reward.append(self.R)
-                        self.mean_episode.append(self.step)
-                        if self.ep_list.value == 0:
-                                self.ep_list.value = self.step
-                                self.reward_list.value = self.R
+
+                if self.env.was_real_done:
+                        if self.ep_list[self.taskidx] == 0:
+                                self.ep_list[self.taskidx] = self.step
+                                self.reward_list[self.taskidx] = self.R
                         else:
-                                self.ep_list.value = self.ep_list.value*0.99 + 0.01*self.step
-                                self.reward_list.value = self.reward_list.value*0.99 + 0.01*self.R
-                        print("R: %3d"%(int(self.R)),"step: ",self.frame.value,"episode_step: ",self.step)
+                                self.ep_list[self.taskidx] = self.ep_list[self.taskidx]*0.99 + 0.01*self.step
+                                self.reward_list[self.taskidx] = self.reward_list[self.taskidx]*0.99 + 0.01*self.R
                         self.R = 0
                         self.step=0
 
         def run(self):
-                self.current_episode = 0.0
                 self.sub_init()
                 self.stop_signal=False
-                self.R = 0
-                self.step=0
                 while not self.stop_signal:
                         self.runEpisode()
 
+        def make_env(self):
+                env = gym.make(self.task)
+                env = MaxAndSkipEnv(env, skip=4)
+                env = EpisodicLifeEnv(env)
+                env = WarpFrame(env)
+                env = FrameStack(env, 4)
+                env.seed(self.seed)
+                return env
+
         def sub_init(self):
-                env = make_atari(ENV)
-                self.env = wrap_deepmind(env,episode_life=True, clip_rewards=False, frame_stack=True, scale=False)
-                self.env.seed(self.seed)
-                self.count=0.0
-              
+                self.env=self.make_env()
+                self.R = 0
+                self.step= 0
 
         def stop(self):
                 self.stop_signal = True
@@ -89,18 +89,19 @@ class Agent(multiprocessing.Process):
                 self.stop_signal=stop_signal
                 return p_
 
-        def train(self, s, a_cat, r, p,s_, flag_done):
-                self.memory.append((s, a_cat, r, p,s_,flag_done))
+        def train(self, s,a_cat, r, p, s_,flag_done):
+                self.memory.append((s,a_cat, r, p,s_,flag_done))
                 if len(self.memory)>=N_STEP:
                         _s,_a, _r, _p,_s_,_s_mask = zip(*self.memory)
-                        s = np.array(_s)
-                        a = np.array(_a)
-                        r = np.array(_r).reshape((-1,1))
-                        p = np.array(_p)
-                        mu = np.sum(p*a,axis=-1,keepdims=True).reshape((-1,1))
-                        s_ = np.array(_s_)
-                        s_mask = np.array(_s_mask).reshape((-1,1))
-                        ready = (s, a, r, mu,s_[-1],s_mask)
+                        s = np.array(_s,dtype=np.uint8)
+                        a = np.array(_a,dtype=np.float32)
+                        r = np.array(_r,dtype=np.float32).reshape((-1,1))
+                        p = np.array(_p,dtype=np.float32)
+                        mu = np.sum(p*a,axis=-1,keepdims=True,dtype=np.float32).reshape((-1,1))
+                        s_ = np.array(_s_,dtype=np.uint8)
+                        s_mask = np.array(_s_mask,dtype=np.uint8).reshape((-1,1))
+                        ready = (s, a, r, mu,s_[-1],s_mask,self.taskidx)
                         self.share_train.put_nowait(ready)
                         self.memory.clear()
-                        gc.collect()
+
+

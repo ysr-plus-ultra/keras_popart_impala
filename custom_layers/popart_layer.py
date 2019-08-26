@@ -52,12 +52,11 @@ class PopArt(Layer):
         else:
             self.bias = None
 
-        self.mu = tf.Variable(0.0,trainable=False,name='popart_mu')
-        self.nu = tf.Variable(1.0,trainable=False,name='popart_nu')
-        self.sigma = tf.sqrt(self.nu-tf.square(self.mu))
-        self.rsigma = tf.rsqrt(self.nu-tf.square(self.mu))
+        self.mu = tf.Variable(np.zeros(self.units),dtype=tf.float32,trainable=False,name='popart_mu')
+        self.sigma = tf.Variable(np.ones(self.units),dtype=tf.float32,trainable=False,name='popart_nu')
+
         self._non_trainable_weights.append(self.mu)
-        self._non_trainable_weights.append(self.nu)
+        self._non_trainable_weights.append(self.sigma)
 
         self.built = True
 
@@ -69,7 +68,7 @@ class PopArt(Layer):
         
         unnormalized = output*self.sigma+self.mu
 
-        out_list = to_list([output,unnormalized], allow_tuple=True)
+        out_list = to_list([output,tf.stop_gradient(unnormalized)], allow_tuple=True)
         return out_list
 
     def compute_output_shape(self, input_shape):

@@ -251,14 +251,13 @@ def layer_normal(inputs, beta, gamma, epsilon,method='l2'):
     mean = K.mean(inputs, axis=-1, keepdims=True)
     multiply = 1.0
     if method is 'l1':
-        abs_sum = K.mean(K.abs(inputs-mean), axis=-1, keepdims=True)
-        norm = abs_sum
+        norm = K.mean(K.abs(inputs-mean), axis=-1, keepdims=True)
         multiply = np.sqrt(2.0/np.pi)
         normalized = (inputs-mean)/(norm+epsilon)
         
     elif method is 'l2':
-        inv_std = tf.rsqrt(tf.reduce_mean(tf.square(inputs-mean), axis=-1, keepdims=True)+epsilon)
-        normalized = (inputs-mean)*inv_std
+        norm = tf.sqrt(tf.reduce_mean(tf.square(inputs-mean), axis=-1, keepdims=True)+epsilon)
+        normalized = (inputs-mean)/(norm+epsilon)
 
     elif method is 'inf':
         norm = K.max(K.abs(inputs-mean), axis=-1, keepdims=True)

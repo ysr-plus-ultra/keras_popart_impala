@@ -140,11 +140,11 @@ class WN_Conv(Layer):
         else:
             self.bias = None
 
-        kernel_norm = tf.reduce_sum(tf.square(self.kernel),axis=(0,1,2),keep_dims=True)
-        self.gain = tf.Variable(tf.sqrt(kernel_norm),name='kernel_gain',trainable=True)
+        kernel_norm = tf.reduce_sum(tf.square(self.kernel),axis=(0,1,2),keep_dims=False)
+        self.gain = tf.Variable(tf.ones_like(kernel_norm),name='kernel_gain',trainable=False)
         self._non_trainable_weights.append(self.gain)
 
-        self.kernel = self.gain*self.kernel*tf.rsqrt(kernel_norm)
+        self.kernel = self.gain*self.kernel/(tf.sqrt(kernel_norm)+1e-12)
 
         # Set input spec.
         self.input_spec = InputSpec(ndim=self.rank + 2,

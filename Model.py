@@ -17,24 +17,25 @@ with open('setting.json') as json_file:
 NUM_STATE = SETTING['N_STATE']
 NUM_ACTIONS = SETTING['N_ACTIONS']
 NUM_LSTM = SETTING['N_LSTM']
+NUM_TASK = SETTING['N_TASK']
 def build_model():
         l_input = Input(batch_shape=(None,*NUM_STATE))
 
-        net = Conv2D(16,(8,8),strides=4,padding='same',kernel_initializer='he_normal')(l_input)
+        net = Conv2D(32,(8,8),strides=(4,4),padding='valid',kernel_initializer='glorot_uniform')(l_input)
         net = Activation('relu')(net)
 
-        net = Conv2D(32,(4,4),strides=2,padding='same',kernel_initializer='he_normal')(net)
+        net = Conv2D(64,(4,4),strides=(2,2),padding='valid',kernel_initializer='glorot_uniform')(net)
         net = Activation('relu')(net)
 
         net = Flatten()(net)
 
-        net = Dense(256,kernel_initializer='he_normal')(net)
+        net = Dense(512,kernel_initializer='glorot_uniform')(net)
         net = Activation('relu')(net)
 
         out_actions = Dense(NUM_ACTIONS,name='policy_head')(net)
         out_actions = Activation('softmax')(out_actions)
 
-        out_value, unnomalized_value = PopArt(1,name="popart_value_head")(net)
+        out_value, unnomalized_value = PopArt(NUM_TASK,name="popart_value_head")(net)
 
         model = Model(inputs=[l_input], outputs=[out_actions, out_value, unnomalized_value])
         
