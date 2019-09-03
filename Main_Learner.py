@@ -28,7 +28,7 @@ MAX_TRY = SETTING['MAX_TRY']
 GAMMA = SETTING['GAMMA']
 LEARNING_RATE = SETTING['LEARNING_RATE']
 POPART_BETA =SETTING['POPART_BETA']
-NUM_TASK = SETTING['N_TASK']
+NUM_TASK = len(ENV)
 
 if __name__ == '__main__':
         seeds = random.sample(range(1, 1000), ACTORS)
@@ -140,7 +140,7 @@ if __name__ == '__main__':
                         num_data = tf.reduce_sum(task,axis=(0,1))
                         new_mu = tf.reduce_sum(gv,axis=(0,1))/num_data
                         new_nu = tf.reduce_sum(tf.square(gv),axis=(0,1))/num_data
-                        new_sigma = tf.sqrt((new_nu-tf.square(new_mu)))
+                        new_sigma = tf.sqrt(new_nu-tf.square(new_mu))
                         new_sigma = tf.clip_by_value(new_sigma,1e-4,1e+6)
 
                         updated_mu = moving_averages.assign_moving_average(self.updated_mu, new_mu, self.beta)
@@ -158,7 +158,11 @@ if __name__ == '__main__':
                         _s_mask_t = tf.placeholder(tf.float32, shape=(N_STEP_UNROLL,None,1),name='s_mast_t')
                         task_t = tf.placeholder(tf.float32, shape=(N_STEP_UNROLL, None, NUM_TASK),name='task_t')
 
-                        placeholder_set = s_t, a_t, r_t, mu_t, _s_t, _s_mask_t, task_t
+                        noise1_t = tf.placeholder(tf.float32, shape=(None, NUM_LSTM, NUM_ACTIONS),name='noise1_t')
+                        noise2_t = tf.placeholder(tf.float32, shape=(None, NUM_ACTIONS),name='noise2_t')
+
+                        placeholder_set = s_t, a_t, r_t, mu_t, _s_t, _s_mask_t, task_t, noise1_t, noise2_t
+
                         discount_t = _s_mask_t*GAMMA
 
                         self.pop_art_layer = None
@@ -182,7 +186,7 @@ if __name__ == '__main__':
                         
                         def calc_hc(last_output, current_sequence):
                                 current_s= current_sequence
-                                p, v, u_v = model([current_s])
+                                p, v, u_v = model([current_s, noise1_t, noise2_t])
                                 return p,v,u_v
 
                         p,normalized_v,unnormalized_v = tf.scan(fn=calc_hc,
@@ -192,7 +196,7 @@ if __name__ == '__main__':
                                                         back_prop=True,
                                                         name='scan1')
 
-                        _,_,bootstrap_value = model([_s_t])
+                        _,_,bootstrap_value = model([_s_t, noise1_t, noise2_t])
 
                         v_plus1 = tf.concat([unnormalized_v[1:], tf.expand_dims(bootstrap_value, 0)], axis=0)
                         pi = tf.reduce_sum(p*a_t,axis=-1,keepdims=True)
@@ -236,10 +240,12 @@ if __name__ == '__main__':
                         self.g_step = tf.train.get_or_create_global_step()
                         self.entropy = tf.reduce_sum(p * tf.log(safe_p),axis=-1,keepdims=True)                        # maximize entropy (regularization)
                         
+
                         self.loss_total = tf.reduce_sum(self.pg_loss + ENTROPY * self.entropy)
                         #self.loss_total = tf.reduce_sum(self.loss_policy + 0.5 *self.loss_value + (ENTROPY/tf.cast(self.g_step+1,tf.float32) * self.entropy))
                         
                         LR=tf.train.polynomial_decay(LEARNING_RATE, self.g_step*N_STEP_UNROLL*(N_SAMPLE+BATCH_SIZE)*4, 2e8, end_learning_rate=1e-4)
+                        
                         tf.summary.scalar('learning_rate',LR,family='etc')
                         optimizer = tf.train.RMSPropOptimizer(LR)
                         #optimizer =tf.train.MomentumOptimizer(LR,0.99,use_nesterov=True)
@@ -279,8 +285,11 @@ if __name__ == '__main__':
                         s_mask=np.empty((N_STEP_UNROLL, batch_size, 1),dtype=np.float32)
                         task=np.empty((N_STEP_UNROLL, batch_size, NUM_TASK),dtype=np.float32)
 
+                        noise1 = np.empty((batch_size, NUM_LSTM, NUM_ACTIONS),dtype=np.float32)
+                        noise2 = np.empty((batch_size, NUM_ACTIONS),dtype=np.float32)
+
                         for idx, val in enumerate(trainq):
-                                _s, _a, _r, _mu,_s_,_s_mask,_taskidx = val
+                                _s, _a, _r, _mu,_s_,_s_mask,_taskidx,_n1,_n2 = val
                                 s[:,idx]=_s
                                 a[:,idx]=_a
                                 r[:,idx]=_r
@@ -288,11 +297,13 @@ if __name__ == '__main__':
                                 s_[idx]=_s_
                                 s_mask[:,idx]=_s_mask
                                 task[:,idx]=np.eye(NUM_TASK)[_taskidx]
+                                noise1[idx]=_n1
+                                noise2[idx]=_n2
 
                         s/=255.0
                         s_/=255.0
                         placeholder_set, minimize = self.graph
-                        s_t, a_t, r_t, mu_t, _s_t, _s_mask_t, task_t= placeholder_set
+                        s_t, a_t, r_t, mu_t, _s_t, _s_mask_t, task_t, noise1_t, noise2_t = placeholder_set
 
                         _, summary,TRY,_= self.session.run(\
                                         [minimize,self.merged,self.g_step,self.update_moving_average],\
@@ -303,6 +314,8 @@ if __name__ == '__main__':
                                                 _s_t: s_,
                                                 _s_mask_t: s_mask,
                                                 task_t: task,
+                                                noise1_t: noise1,
+                                                noise2_t: noise2,
                                                 self.var_ep:np.array(report_episode),
                                                 self.var_reward:np.array(report_reward),
                                                 self.lp: 1.0})
@@ -318,17 +331,19 @@ if __name__ == '__main__':
 
 
                 def predict(self, stop):
-                        s=[]
-                        num=[]
-                        for i in range(ACTORS//2):
-                                _s,_num = policy_state_push.get()
+                        s,num,noise1,noise2=[],[],[],[]
+                        for i in range(ACTORS):
+                                _s,_num,_n1,_n2 = policy_state_push.get()
                                 s.append(_s)
                                 num.append(_num)
+                                noise1.append(_n1)
+                                noise2.append(_n2)
 
                         s = np.array(s,dtype=np.float32)/255.0
-
+                        noise1 = np.array(noise1)
+                        noise2 = np.array(noise2)
                         with self.default_graph.as_default():
-                                r_p, _, _ = self.predict_model.predict([s])
+                                r_p, _, _ = self.predict_model.predict([s,noise1,noise2])
 
                         for i in range(len(num)):
                                 idx = num[i]
@@ -380,7 +395,7 @@ if __name__ == '__main__':
                 def run(self):
                         while not self.stop_signal:
                                 brain.sync_weight()
-                                for i in range(N_STEP_UNROLL*2):
+                                for i in range(N_STEP_UNROLL):
                                         brain.predict(self.stop_signal)
                                 if self.stop_signal:
                                         break
@@ -406,7 +421,7 @@ if __name__ == '__main__':
         while 1:
                 time.sleep(1)
                 elapsed_time = time.time()-start_time
-                if elapsed_time>3600*12:
+                if elapsed_time>3600*36:
                         for f in feeders:
                                 f.stop()
 

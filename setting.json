@@ -6,14 +6,13 @@
     "BATCH":32,
     "N_STEP_UNROLL":20,
     "LEARNING_RATE":1e-3,
-    "ENTROPY":1e-2,
+    "ENTROPY":0.0,
     "MAX_TRY":30000000,
     "POPART":false,
     "POPART_BETA":3e-4,
-    "ENV":["BreakoutNoFrameskip-v4","PongNoFrameskip-v4"],
-    "N_TASK":2,
+    "ENV":["BreakoutNoFrameskip-v4","PongNoFrameskip-v4","AtlantisNoFrameskip-v4"],
     "N_STATE":[84,84,4],
     "N_ACTIONS":4,
-    "N_LSTM":256,
+    "N_LSTM":512,
     "GAMMA":0.99
 }

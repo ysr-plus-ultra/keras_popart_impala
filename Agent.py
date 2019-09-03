@@ -11,7 +11,8 @@ NUM_STATE = SETTING['N_STATE']
 NUM_ACTIONS = SETTING['N_ACTIONS']
 NUM_LSTM = SETTING['N_LSTM']
 N_STEP = SETTING['N_STEP_UNROLL']
-NUM_TASK = SETTING['N_TASK']
+ENV = SETTING['ENV']
+NUM_TASK = len(ENV)
 
 class Agent(multiprocessing.Process):
         stop_signal = False
@@ -50,13 +51,14 @@ class Agent(multiprocessing.Process):
                         if done or self.stop_signal:
                                 break
 
-                if self.env.was_real_done:
+                if self.env.unwrapped.ale.lives()==0:
                         if self.ep_list[self.taskidx] == 0:
                                 self.ep_list[self.taskidx] = self.step
                                 self.reward_list[self.taskidx] = self.R
                         else:
                                 self.ep_list[self.taskidx] = self.ep_list[self.taskidx]*0.99 + 0.01*self.step
                                 self.reward_list[self.taskidx] = self.reward_list[self.taskidx]*0.99 + 0.01*self.R
+
                         self.R = 0
                         self.step=0
 
@@ -73,20 +75,27 @@ class Agent(multiprocessing.Process):
                 env = WarpFrame(env)
                 env = FrameStack(env, 4)
                 env.seed(self.seed)
+
                 return env
 
         def sub_init(self):
                 self.env=self.make_env()
                 self.R = 0
                 self.step= 0
+                self.reset_noise()
 
         def stop(self):
                 self.stop_signal = True
 
+        def reset_noise(self):
+                self.noise1 = np.random.normal(size=(NUM_LSTM,NUM_ACTIONS))
+                self.noise2 = np.random.normal(size=(NUM_ACTIONS))
+
         def predict(self, s):
-                self.push_state.put((s,self.num))
+                self.push_state.put((s,self.num,self.noise1,self.noise2))
                 p_,stop_signal= self.pipe.recv()
                 self.stop_signal=stop_signal
+
                 return p_
 
         def train(self, s,a_cat, r, p, s_,flag_done):
@@ -100,8 +109,12 @@ class Agent(multiprocessing.Process):
                         mu = np.sum(p*a,axis=-1,keepdims=True,dtype=np.float32).reshape((-1,1))
                         s_ = np.array(_s_,dtype=np.uint8)
                         s_mask = np.array(_s_mask,dtype=np.uint8).reshape((-1,1))
-                        ready = (s, a, r, mu,s_[-1],s_mask,self.taskidx)
+                        ready = (s, a, r, mu,s_[-1],s_mask,self.taskidx,self.noise1,self.noise2)
                         self.share_train.put_nowait(ready)
                         self.memory.clear()
+                        self.reset_noise()
+
+
+
 
 

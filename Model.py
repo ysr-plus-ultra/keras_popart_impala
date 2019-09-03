@@ -17,9 +17,12 @@ with open('setting.json') as json_file:
 NUM_STATE = SETTING['N_STATE']
 NUM_ACTIONS = SETTING['N_ACTIONS']
 NUM_LSTM = SETTING['N_LSTM']
-NUM_TASK = SETTING['N_TASK']
+ENV = SETTING['ENV']
+NUM_TASK = len(ENV)
 def build_model():
         l_input = Input(batch_shape=(None,*NUM_STATE))
+        noise1  = Input(batch_shape=(None, NUM_LSTM, NUM_ACTIONS))
+        noise2  = Input(batch_shape=(None, NUM_ACTIONS))
 
         net = Conv2D(32,(8,8),strides=(4,4),padding='valid',kernel_initializer='glorot_uniform')(l_input)
         net = Activation('relu')(net)
@@ -29,14 +32,14 @@ def build_model():
 
         net = Flatten()(net)
 
-        net = Dense(512,kernel_initializer='glorot_uniform')(net)
+        net = Dense(NUM_LSTM,kernel_initializer='glorot_uniform')(net)
         net = Activation('relu')(net)
 
-        out_actions = Dense(NUM_ACTIONS,name='policy_head')(net)
+        out_actions = NoisyDense(NUM_ACTIONS,name='policy_head')([net,noise1,noise2])
         out_actions = Activation('softmax')(out_actions)
 
         out_value, unnomalized_value = PopArt(NUM_TASK,name="popart_value_head")(net)
 
-        model = Model(inputs=[l_input], outputs=[out_actions, out_value, unnomalized_value])
+        model = Model(inputs=[l_input,noise1, noise2], outputs=[out_actions, out_value, unnomalized_value])
         
         return model
