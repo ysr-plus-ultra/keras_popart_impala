@@ -115,7 +115,7 @@ if __name__ == '__main__':
                                 tf.summary.scalar('mu',self.pop_art_layer.mu[i],family=ENV[i])
                                 tf.summary.scalar('sigma',self.pop_art_layer.sigma[i],family=ENV[i])
                         self.merged = tf.summary.merge_all()
-                        self.train_writer = tf.summary.FileWriter("./logs/"+"atari")
+                        self.train_writer = tf.summary.FileWriter("./logs/popart_atari")
 
                 def popart_ops(self):
                         popart_mu = self.old_mu
@@ -327,7 +327,7 @@ if __name__ == '__main__':
                                 self.train_writer.flush()
                         if TRY%100==1:
                                 print(TRY)
-                                self.model.save("./logs/atari.h5")
+                                self.model.save("./logs/popart_atari/"+"model.h5")
 
 
                 def predict(self, stop):

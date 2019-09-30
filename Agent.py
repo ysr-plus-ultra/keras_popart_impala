@@ -13,6 +13,7 @@ NUM_LSTM = SETTING['N_LSTM']
 N_STEP = SETTING['N_STEP_UNROLL']
 ENV = SETTING['ENV']
 NUM_TASK = len(ENV)
+NOISY = SETTING['NOISYNET']
 
 class Agent(multiprocessing.Process):
         stop_signal = False
@@ -88,8 +89,13 @@ class Agent(multiprocessing.Process):
                 self.stop_signal = True
 
         def reset_noise(self):
-                self.noise1 = np.random.normal(size=(NUM_LSTM,NUM_ACTIONS))
-                self.noise2 = np.random.normal(size=(NUM_ACTIONS))
+                if NOISY:
+                        self.noise1 = np.random.normal(size=(NUM_LSTM,NUM_ACTIONS))
+                        self.noise2 = np.random.normal(size=(NUM_ACTIONS))
+                else:
+                        self.noise1 = np.zeros((NUM_LSTM,NUM_ACTIONS))
+                        self.noise2 = np.zeros((NUM_ACTIONS))
+
 
         def predict(self, s):
                 self.push_state.put((s,self.num,self.noise1,self.noise2))
